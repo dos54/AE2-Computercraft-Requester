@@ -128,6 +128,10 @@ local function countQueuedRequests()
   return count
 end
 
+local function getBridge()
+  return peripheral.find("meBridge")
+end
+
 local function getMainMenuStats()
   local bridge = getBridge()
   if not bridge then
