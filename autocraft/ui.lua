@@ -796,8 +796,8 @@ local function drawMain()
     statLines = {
       "Network Stats",
       "",
-      "Item Storage:  " .. fmtStatNumber(stats.itemUsed / stats.itemTotal) .. '%',
-      "Fluid Storage: " .. fmtStatNumber(stats.fluidUsed / stats.fluidTotal) .. '%',
+      "Item Storage:  " .. fmtStatNumber(stats.itemUsed / stats.itemTotal) * 100 .. '%',
+      "Fluid Storage: " .. fmtStatNumber(stats.fluidUsed / stats.fluidTotal) * 100 .. '%',
       "",
       "Energy:     " .. fmtStatNumber(stats.euPerTick) .. " EU/t",
       "CPUs Used:  " .. fmtStatNumber(stats.cpuUsed),
