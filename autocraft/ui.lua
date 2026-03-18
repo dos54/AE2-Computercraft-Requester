@@ -31,6 +31,10 @@ local state = {
   formSource = nil,
 
   actionSelected = 1,
+
+  searchQuery = "",
+  searchActive = false,
+  addListCache = nil,
 }
 
 local function clamp(n, min, max)
@@ -63,6 +67,38 @@ local function ellipsize(s, maxLen)
   if #s <= maxLen then return s end
   if maxLen <= 3 then return s:sub(1, maxLen) end
   return s:sub(1, maxLen - 3) .. "..."
+end
+
+local function normalizeSearchText(s)
+  s = tostring(s or ""):lower()
+  s = s:gsub("[%p_]+", " ")
+  s = s:gsub("%s+", " ")
+  s = s:gsub("^%s+", "")
+  s = s:gsub("%s+$", "")
+  return s
+end
+
+local function fuzzyMatch(label, query)
+  local q = normalizeSearchText(query)
+  if q == "" then
+    return true
+  end
+
+  local text = normalizeSearchText(label)
+  local pos = 1
+
+  for token in q:gmatch("%S+") do
+    local startPos, endPos = text:find(token, pos, true)
+    if not startPos then
+      startPos, endPos = text:find(token, 1, true)
+      if not startPos then
+        return false
+      end
+    end
+    pos = endPos + 1
+  end
+
+  return true
 end
 
 local function loadRules()
@@ -153,7 +189,7 @@ local function makeRuleFromCraftable(item, kind)
   }
 end
 
-local function buildAddList()
+local function buildAddListRaw()
   local bridge = getBridge()
   if not bridge then
     state.message = "Bridge not found"
@@ -192,6 +228,22 @@ local function buildAddList()
   end)
 
   return out
+end
+
+local function buildAddList()
+  local raw = state.addListCache or {}
+  if state.searchQuery == "" then
+    return raw
+  end
+
+  local filtered = {}
+  for _, item in ipairs(raw) do
+    if fuzzyMatch(item.label, state.searchQuery) or fuzzyMatch(item.value.resource_name, state.searchQuery) then
+      filtered[#filtered + 1] = item
+    end
+  end
+
+  return filtered
 end
 
 local function buildEditList()
@@ -245,6 +297,44 @@ local function buildViewList()
   return out
 end
 
+local function rebuildAddList()
+  state.list = buildAddList()
+  if #state.list <= 0 then
+    state.selected = 1
+    state.scroll = 0
+    return
+  end
+
+  state.selected = clamp(state.selected, 1, #state.list)
+  state.scroll = 0
+end
+
+local function refreshAddListCache()
+  state.addListCache = buildAddListRaw()
+  rebuildAddList()
+end
+
+local function openAddSearch()
+  if state.screen ~= "add_list" then
+    return
+  end
+
+  state.searchActive = true
+  state.message = "Search mode"
+end
+
+local function clearAddSearch()
+  state.searchQuery = ""
+  state.searchActive = false
+  rebuildAddList()
+  state.message = "Search cleared"
+end
+
+local function leaveAddList()
+  state.addListCache = nil
+  state.searchActive = false
+end
+
 local function setScreenMain()
   state.screen = "main"
   state.selected = 1
@@ -253,10 +343,10 @@ local function setScreenMain()
     {
       label = "Add Request",
       action = function()
-        state.list = buildAddList()
         state.screen = "add_list"
         state.selected = 1
         state.scroll = 0
+        refreshAddListCache()
       end
     },
     {
@@ -379,8 +469,8 @@ local function saveForm()
   state.message = state.formMode == "add" and "Rule added" or "Rule updated"
 
   if state.formMode == "add" then
-    state.list = buildAddList()
     state.screen = "add_list"
+    refreshAddListCache()
   else
     state.list = buildEditList()
     state.screen = "edit_list"
@@ -439,7 +529,17 @@ end
 local function drawHeader(title)
   local w = term.getSize()
   fillLine(1, colors.blue)
-  writeAt(2, 1, ellipsize(title, w - 2), colors.white, colors.blue)
+
+  local suffix = ""
+  if state.screen == "add_list" then
+    if state.searchQuery ~= "" then
+      suffix = " | F Search: " .. state.searchQuery
+    else
+      suffix = " | F Search"
+    end
+  end
+
+  writeAt(2, 1, ellipsize(title .. suffix, w - 2), colors.white, colors.blue)
 end
 
 local function drawNavBar()
@@ -451,6 +551,13 @@ local function drawNavBar()
     buttons = {
       { label = "[Select]", x1 = 2 },
       { label = "[Quit]",   x1 = 13 },
+    }
+  elseif state.screen == "add_list" then
+    buttons = {
+      { label = "[Select]", x1 = 2 },
+      { label = "[Back]",   x1 = 13 },
+      { label = "[Main]",   x1 = 22 },
+      { label = "[Find]",   x1 = 31 },
     }
   elseif state.screen == "form" then
     buttons = {
@@ -477,7 +584,7 @@ local function drawNavBar()
 
   local msg = state.message ~= "" and state.message or ""
   if msg ~= "" then
-    writeAt(32, h, ellipsize(msg, w - 32), colors.black, colors.gray)
+    writeAt(40, h, ellipsize(msg, w - 40), colors.black, colors.gray)
   end
 
   return buttons
@@ -514,8 +621,39 @@ local function drawAddList()
   drawHeader("Add Request")
 
   local w, h = term.getSize()
-  local startY = 3
-  local visibleRows = h - 4
+  local startY = 4
+  local visibleRows = h - 5
+
+  fillLine(2)
+  fillLine(3)
+
+  if state.searchActive then
+    local label = "Search:"
+    local barX = 11
+    local clearLabel = "[X]"
+    local clearX = math.max(barX + 8, w - #clearLabel - 1)
+    local barW = math.max(8, clearX - barX - 1)
+
+    writeAt(3, 2, label, colors.yellow)
+    writeAt(barX, 2, string.rep(" ", barW), colors.black, colors.lightGray)
+    writeAt(barX, 2, ellipsize(state.searchQuery, barW), colors.black, colors.lightGray)
+    writeAt(clearX, 2, clearLabel, colors.white, colors.red)
+    writeAt(3, 3, "Type to filter", colors.lightGray)
+  elseif state.searchQuery ~= "" then
+    local label = "Filter:"
+    local barX = 11
+    local clearLabel = "[X]"
+    local clearX = math.max(barX + 8, w - #clearLabel - 1)
+    local barW = math.max(8, clearX - barX - 1)
+
+    writeAt(3, 2, label, colors.lightGray)
+    writeAt(barX, 2, string.rep(" ", barW), colors.black, colors.gray)
+    writeAt(barX, 2, ellipsize(state.searchQuery, barW), colors.black, colors.gray)
+    writeAt(clearX, 2, clearLabel, colors.white, colors.red)
+    writeAt(3, 3, "Press F or click [Find] to edit search", colors.lightGray)
+  else
+    writeAt(3, 2, "Press F or click [Find] to search", colors.lightGray)
+  end
 
   state.scroll = ensureVisible(#state.list, state.selected, state.scroll, visibleRows)
 
@@ -711,7 +849,10 @@ end
 local function goBack()
   if state.screen == "main" then
     return
-  elseif state.screen == "add_list" or state.screen == "edit_list" or state.screen == "view_requests" then
+  elseif state.screen == "add_list" then
+    leaveAddList()
+    setScreenMain()
+  elseif state.screen == "edit_list" or state.screen == "view_requests" then
     setScreenMain()
   elseif state.screen == "rule_actions" then
     state.screen = "edit_list"
@@ -821,7 +962,7 @@ local function handleKey(key)
   end
 
   if state.screen == "add_list" then
-    local visibleRows = h - 4
+    local visibleRows = h - 5
     if key == keys.up then
       moveSelection(-1, #state.list, visibleRows)
     elseif key == keys.down then
@@ -829,7 +970,17 @@ local function handleKey(key)
     elseif key == keys.enter then
       activateCurrent()
     elseif key == keys.backspace then
-      goBack()
+      if state.searchActive and #state.searchQuery > 0 then
+        state.searchQuery = state.searchQuery:sub(1, -2)
+        rebuildAddList()
+      elseif state.searchActive then
+        state.searchActive = false
+        state.message = ""
+      else
+        goBack()
+      end
+    elseif key == keys.f then
+      openAddSearch()
     end
     return
   end
@@ -886,18 +1037,26 @@ local function handleKey(key)
 end
 
 local function handleChar(ch)
-  if state.screen ~= "form" then return end
-  if state.formSelected > #state.formFields then return end
+  if state.screen == "form" then
+    if state.formSelected > #state.formFields then return end
 
-  local field = state.formFields[state.formSelected]
-  if field.numeric and not ch:match("%d") then return end
-  field.value = field.value .. ch
+    local field = state.formFields[state.formSelected]
+    if field.numeric and not ch:match("%d") then return end
+    field.value = field.value .. ch
+    return
+  end
+
+  if state.screen == "add_list" and state.searchActive then
+    state.searchQuery = state.searchQuery .. ch
+    rebuildAddList()
+    return
+  end
 end
 
 local function handleMouseClick(button, x, y)
   if button ~= 1 then return end
 
-  local _, h = term.getSize()
+  local w, h = term.getSize()
 
   if y == h then
     if x >= 2 and x <= 9 then
@@ -907,7 +1066,13 @@ local function handleMouseClick(button, x, y)
       goBack()
       return
     elseif x >= 22 and x <= 27 then
+      if state.screen == "add_list" then
+        leaveAddList()
+      end
       setScreenMain()
+      return
+    elseif state.screen == "add_list" and x >= 31 and x <= 36 then
+      openAddSearch()
       return
     end
   end
@@ -922,9 +1087,29 @@ local function handleMouseClick(button, x, y)
   end
 
   if state.screen == "add_list" then
-    local row = y - 2
+    if y == 2 and state.searchQuery ~= "" then
+      local clearLabel = "[X]"
+      local clearX = math.max(11 + 8, w - #clearLabel - 1)
+      if x >= clearX and x <= clearX + #clearLabel - 1 then
+        clearAddSearch()
+        return
+      end
+    end
+
+    if y == 2 then
+      local clearLabel = "[X]"
+      local clearX = math.max(11 + 8, w - #clearLabel - 1)
+      local barW = math.max(8, clearX - 11 - 1)
+      if x >= 11 and x <= 11 + barW - 1 then
+        state.searchActive = true
+        state.message = "Search mode"
+        return
+      end
+    end
+
+    local row = y - 3
     local _, hh = term.getSize()
-    local visibleRows = hh - 4
+    local visibleRows = hh - 5
     if row >= 1 and row <= visibleRows then
       local idx = state.scroll + row
       if idx >= 1 and idx <= #state.list then
