@@ -4,3 +4,5 @@ autocraft/Queue.lua
 autocraft/ui.lua
 startup.lua
 version.txt
+install.lua
+updater.lua
