@@ -35,7 +35,23 @@ local state = {
   searchQuery = "",
   searchActive = false,
   addListCache = nil,
+
+  mainStats = nil,
+  statsTimer = nil,
+  dirty = true,
 }
+
+local function markDirty()
+  state.dirty = true
+end
+
+local function startStatsTimer()
+  if state.screen == "main" then
+    state.statsTimer = os.startTimer(2)
+  else
+    state.statsTimer = nil
+  end
+end
 
 local function clamp(n, min, max)
   if n < min then return min end
@@ -129,6 +145,12 @@ local function countQueuedRequests()
 end
 
 local function getBridge()
+  if daemonMod.getBridge then
+    local bridge = daemonMod.getBridge()
+    if type(bridge) == "table" then
+      return bridge
+    end
+  end
   return peripheral.find("meBridge")
 end
 
@@ -257,15 +279,7 @@ local function getRulesOrEmpty()
   return daemonMod.runtime.rules or {}
 end
 
-local function getBridge()
-  if daemonMod.getBridge then
-    local bridge = daemonMod.getBridge()
-    if type(bridge) == "table" then
-      return bridge
-    end
-  end
-  return peripheral.find("meBridge")
-end
+
 
 local function existingRuleKeySet()
   local out = {}
@@ -406,6 +420,7 @@ local function rebuildAddList()
 
   state.selected = clamp(state.selected, 1, #state.list)
   state.scroll = 0
+  markDirty()
 end
 
 local function refreshAddListCache()
@@ -420,6 +435,7 @@ local function openAddSearch()
 
   state.searchActive = true
   state.message = "Search mode"
+  markDirty()
 end
 
 local function clearAddSearch()
@@ -427,17 +443,23 @@ local function clearAddSearch()
   state.searchActive = false
   rebuildAddList()
   state.message = "Search cleared"
+  markDirty()
 end
 
 local function leaveAddList()
   state.addListCache = nil
   state.searchActive = false
+  markDirty()
 end
 
 local function setScreenMain()
   state.screen = "main"
   state.selected = 1
   state.scroll = 0
+  state.mainStats = getMainMenuStats()
+  startStatsTimer()
+  markDirty()
+
   state.menu = {
     {
       label = "Add Request",
@@ -446,6 +468,7 @@ local function setScreenMain()
         state.selected = 1
         state.scroll = 0
         refreshAddListCache()
+        markDirty()
       end
     },
     {
@@ -455,6 +478,8 @@ local function setScreenMain()
         state.screen = "edit_list"
         state.selected = 1
         state.scroll = 0
+        state.statsTimer = nil
+        markDirty()
       end
     },
     {
@@ -464,13 +489,18 @@ local function setScreenMain()
         state.screen = "view_requests"
         state.selected = 1
         state.scroll = 0
+        state.statsTimer = nil
+        markDirty()
       end
     },
     {
       label = "Refresh",
       action = function()
         syncRuntimeRules()
+        state.mainStats = getMainMenuStats()
+        startStatsTimer()
         state.message = "Refreshed"
+        markDirty()
       end
     },
     {
@@ -697,11 +727,22 @@ local function drawMain()
   local startY = 3
   local visibleRows = h - 4
 
-  local stats = getMainMenuStats()
+  local stats = state.mainStats or {
+    itemTotal = nil,
+    itemUsed = nil,
+    fluidTotal = nil,
+    fluidUsed = nil,
+    aePerTick = nil,
+    euPerTick = nil,
+    cpuTotal = nil,
+    cpuUsed = nil,
+    queueSize = 0,
+    bridgeMissing = true,
+  }
 
-  local panelWidth = math.min(34, math.max(24, math.floor(w * 0.42)))
-  local menuWidth = math.max(18, w - panelWidth - 3)
-  local panelX = menuWidth + 2
+  local panelWidth = math.min(40, math.max(30, math.floor(w * 0.48)))
+  local panelX = w - panelWidth + 1
+  local menuWidth = math.max(18, panelX - 3)
 
   state.scroll = ensureVisible(#state.menu, state.selected, state.scroll, visibleRows)
 
@@ -717,28 +758,16 @@ local function drawMain()
       local bg = selected and colors.lightGray or colors.black
       local fg = selected and colors.black or colors.white
 
-      writeAt(2, y, string.rep(" ", menuWidth - 1), fg, bg)
+      writeAt(2, y, string.rep(" ", menuWidth - 2), fg, bg)
       writeAt(3, y, ellipsize(item.label, menuWidth - 3), fg, bg)
     end
   end
 
   for y = startY, h - 1 do
-    writeAt(panelX, y, "|", colors.gray, colors.black)
+    writeAt(panelX - 1, y, "|", colors.gray, colors.black)
   end
 
-  local statLines = {
-    "Network Stats",
-    "",
-    "Items:  " .. fmtStatNumber(stats.itemUsed) .. " / " .. fmtStatNumber(stats.itemTotal),
-    "Fluids: " .. fmtStatNumber(stats.fluidUsed) .. " / " .. fmtStatNumber(stats.fluidTotal),
-    "",
-    "Energy: " .. fmtStatNumber(stats.euPerTick) .. " EU/t",
-    "       (" .. fmtStatNumber(stats.aePerTick) .. " AE/t)",
-    "",
-    "CPUs:   " .. fmtStatNumber(stats.cpuUsed) .. " / " .. fmtStatNumber(stats.cpuTotal),
-    "Queue:  " .. fmtStatNumber(stats.queueSize),
-  }
-
+  local statLines
   if stats.bridgeMissing then
     statLines = {
       "Network Stats",
@@ -751,13 +780,28 @@ local function drawMain()
       "CPUs:   N/A",
       "Queue:  " .. fmtStatNumber(stats.queueSize),
     }
+  else
+    statLines = {
+      "Network Stats",
+      "",
+      "Item Used:  " .. fmtStatNumber(stats.itemUsed),
+      "Item Cap:   " .. fmtStatNumber(stats.itemTotal),
+      "Fluid Used: " .. fmtStatNumber(stats.fluidUsed),
+      "Fluid Cap:  " .. fmtStatNumber(stats.fluidTotal),
+      "",
+      "Energy:     " .. fmtStatNumber(stats.euPerTick) .. " EU/t",
+      "AE Draw:    " .. fmtStatNumber(stats.aePerTick) .. " AE/t",
+      "CPUs Used:  " .. fmtStatNumber(stats.cpuUsed),
+      "CPUs Total: " .. fmtStatNumber(stats.cpuTotal),
+      "Queue:      " .. fmtStatNumber(stats.queueSize),
+    }
   end
 
   for i, line in ipairs(statLines) do
     local y = startY + i - 1
     if y < h then
       local fg = (i == 1) and colors.cyan or colors.lightGray
-      writeAt(panelX + 2, y, ellipsize(line, w - panelX - 2), fg, colors.black)
+      writeAt(panelX + 1, y, ellipsize(line, panelWidth - 2), fg, colors.black)
     end
   end
 
@@ -1323,17 +1367,30 @@ function UI.run()
   setScreenMain()
 
   while state.running do
-    redraw()
+    if state.dirty then
+      redraw()
+      state.dirty = false
+    end
+
     local event, a, b, c = os.pullEvent()
 
     if event == "key" then
       handleKey(a)
+      markDirty()
     elseif event == "char" then
       handleChar(a)
+      markDirty()
     elseif event == "mouse_click" then
       handleMouseClick(a, b, c)
+      markDirty()
     elseif event == "term_resize" then
-      -- redraw next loop
+      markDirty()
+    elseif event == "timer" and a == state.statsTimer then
+      if state.screen == "main" then
+        state.mainStats = getMainMenuStats()
+        startStatsTimer()
+        markDirty()
+      end
     end
   end
 
