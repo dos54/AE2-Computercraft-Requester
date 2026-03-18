@@ -40,7 +40,7 @@ local runtime = {
   queued_by_key = {},
   rule_state_by_key = {},
   now = os.epoch("utc"),
-  reserved_cpus = 1,
+  reserved_cpus = 3,
   min_retry_delay_ms = 2000,
   loop_sleep_s = 1,
 }
@@ -194,11 +194,11 @@ local function shouldQueue(bridge, rule, state, now)
     return false
   end
 
-  if state.status ~= "idle" and state.status ~= "cooldown" then
+  if state.status == "queued" or state.status == "pending" or state.status == "crafting" then
     return false
   end
 
-  if now < state.cooldown_until_ms then
+  if state.status == "cooldown" and now < state.cooldown_until_ms then
     return false
   end
 
@@ -209,20 +209,13 @@ local function shouldQueue(bridge, rule, state, now)
 
   state.last_seen_amount = amount
 
-  if amount >= rule.threshold_high then
-    state.refill_active = false
-    return false
-  end
-
   if amount <= rule.threshold_low then
     state.refill_active = true
+  elseif amount >= rule.threshold_high then
+    state.refill_active = false
   end
 
-  if not state.refill_active then
-    return false
-  end
-
-  return true
+  return state.refill_active == true
 end
 
 ---@param filename string
@@ -450,7 +443,6 @@ local function processNextCraft()
     state.last_error = craftErr or "Craft request rejected"
     markCooldown(state, runtime.now)
 
-    enqueue(rule)
     return false, state.last_error
   end
 
@@ -501,19 +493,12 @@ local function refreshCraftingStates(bridge)
       local state = runtime.rule_state_by_key[key]
       if state then
         local amount = getStoredAmount(bridge, rule)
-        if amount ~= nil then
-          state.last_seen_amount = amount
-        end
 
-        if amount ~= nil and amount >= rule.threshold_high then
-          state.refill_active = false
-        elseif amount ~= nil and amount <= rule.threshold_low then
-          state.refill_active = true
-        end
-
-        if state.status == "cooldown" and runtime.now >= state.cooldown_until_ms then
-          state.status = "idle"
-          state.last_error = nil
+        if state.status == "cooldown" then
+          if runtime.now >= state.cooldown_until_ms then
+            state.status = "idle"
+            state.last_error = nil
+          end
         elseif state.status == "pending" or state.status == "crafting" then
           local processing, completedFast = isProcessing(bridge, rule, state)
 
@@ -521,8 +506,14 @@ local function refreshCraftingStates(bridge)
             state.status = "crafting"
             state.last_error = nil
           elseif completedFast then
-            if amount ~= nil and amount >= rule.threshold_high then
-              state.refill_active = false
+            local newAmount = state.last_seen_amount
+
+            if newAmount ~= nil then
+              if newAmount <= rule.threshold_low then
+                state.refill_active = true
+              elseif newAmount >= rule.threshold_high then
+                state.refill_active = false
+              end
             end
 
             state.status = "idle"
@@ -534,11 +525,16 @@ local function refreshCraftingStates(bridge)
             state.last_error = "Craft did not appear to start"
             markCooldown(state, runtime.now)
           end
-          -- confirmed crafting jobs are intentionally never timed out here
-        end
+        else
+          if amount ~= nil then
+            state.last_seen_amount = amount
 
-        if state.status == "idle" and amount ~= nil and amount >= rule.threshold_high then
-          state.refill_active = false
+            if amount <= rule.threshold_low then
+              state.refill_active = true
+            elseif amount >= rule.threshold_high then
+              state.refill_active = false
+            end
+          end
         end
       end
     end
