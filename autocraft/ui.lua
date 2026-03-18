@@ -485,7 +485,7 @@ end
 
 local function drawMain()
   clear()
-  drawHeader("AutoCraft - Main Menu")
+  drawHeader("AutoCraft - Main Menu - Version 1")
 
   local _, h = term.getSize()
   local startY = 3
