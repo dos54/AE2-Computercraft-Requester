@@ -504,6 +504,18 @@ local function setScreenMain()
       end
     },
     {
+      label = "Run Updater",
+      action = function()
+        local ok, err = pcall(function()
+          local updater = require('updater')
+          updater.installOrUpdate(true)
+        end)
+
+        state.message = ok and 'Updater complete' or ('Update failed' .. tostring(err))
+        markDirty()
+      end
+    },
+    {
       label = "Quit",
       action = function()
         state.running = false
