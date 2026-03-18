@@ -138,23 +138,40 @@ end
 
 ---@param bridge table
 ---@param rule Rule
----@return number|nil
+---@return number
 ---@return string|nil
 local function getStoredAmount(bridge, rule)
   local filter = buildFilter(rule, nil)
-  local result
 
+  local list
   if rule.type == "fluid" then
-    result = bridge.getFluid(filter)
+    if type(bridge.listFluids) ~= "function" then
+      return 0, "listFluids not supported"
+    end
+    list = bridge.listFluids()
   else
-    result = bridge.getItem(filter)
+    if type(bridge.listItems) ~= "function" then
+      return 0, "listItems not supported"
+    end
+    list = bridge.listItems()
   end
 
-  if result == nil then
-    return 0, nil
+  if type(list) ~= "table" then
+    return 0, "Invalid list response"
   end
 
-  return result.amount or 0, nil
+  for _, entry in ipairs(list) do
+    if entry.name == filter.name then
+      if filter.fingerprint and entry.fingerprint ~= filter.fingerprint then
+        goto continue
+      end
+
+      return entry.amount or 0, nil
+    end
+    ::continue::
+  end
+
+  return 0, nil
 end
 
 ---@param bridge table
