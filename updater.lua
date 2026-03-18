@@ -2,6 +2,21 @@ local M = {}
 
 local base = "https://raw.githubusercontent.com/dos54/AE2-Computercraft-Requester/main/"
 
+local LOG_FILE = "updater.log"
+
+local function log(msg)
+  local ts = os.date("%Y-%m-%d %H:%M:%S")
+  local line = "[" .. ts .. "] " .. tostring(msg)
+
+  print(line)
+
+  local f = fs.open(LOG_FILE, "a")
+  if f then
+    f.writeLine(line)
+    f.close()
+  end
+end
+
 local function fetch(url)
   local res = http.get(url)
   if not res then
@@ -86,7 +101,7 @@ local function downloadFile(path)
     fs.delete(path)
   end
 
-  print("Downloading " .. path)
+  log("Downloading " .. path)
   local ok = shell.run("wget", base .. path, path)
   if not ok then
     return false, "Failed to download " .. path
@@ -112,7 +127,7 @@ function M.installOrUpdate(force)
   local remoteVersion, versionErr = fetchRemoteVersion()
 
   if not remoteVersion then
-    print(versionErr or "Failed to fetch remote version")
+    log(versionErr or "Failed to fetch remote version")
     return false
   end
 
@@ -120,26 +135,26 @@ function M.installOrUpdate(force)
     return true
   end
 
-  print("Local version:  " .. tostring(localVersion or "<none>"))
-  print("Remote version: " .. remoteVersion)
+  log("Local version:  " .. tostring(localVersion or "<none>"))
+  log("Remote version: " .. remoteVersion)
 
   local files, manifestErr = fetchManifest()
   if not files then
-    print(manifestErr or "Failed to fetch manifest")
+    log(manifestErr or "Failed to fetch manifest")
     return false
   end
 
   for _, path in ipairs(files) do
     local ok, err = downloadFile(path)
     if not ok then
-      print(err or "Download failed")
+      log(err or "Download failed")
       return false
     end
   end
 
   removeFilesNotInManifest(files)
 
-  print("Update complete.")
+  log("Update complete.")
   return true
 end
 
