@@ -101,6 +101,101 @@ local function fuzzyMatch(label, query)
   return true
 end
 
+local function safeBridgeCall(bridge, methodName)
+  if not bridge or type(bridge[methodName]) ~= "function" then
+    return nil
+  end
+
+  local ok, value = pcall(bridge[methodName], bridge)
+  if not ok then
+    return nil
+  end
+
+  return value
+end
+
+local function countQueuedRequests()
+  local count = 0
+
+  if daemonMod.runtime and type(daemonMod.runtime.queued_by_key) == "table" then
+    for _, queued in pairs(daemonMod.runtime.queued_by_key) do
+      if queued then
+        count = count + 1
+      end
+    end
+  end
+
+  return count
+end
+
+local function getMainMenuStats()
+  local bridge = getBridge()
+  if not bridge then
+    return {
+      itemTotal = nil,
+      itemUsed = nil,
+      fluidTotal = nil,
+      fluidUsed = nil,
+      aePerTick = nil,
+      euPerTick = nil,
+      cpuTotal = nil,
+      cpuUsed = nil,
+      queueSize = countQueuedRequests(),
+      bridgeMissing = true,
+    }
+  end
+
+  local itemTotal = safeBridgeCall(bridge, "getTotalItemStorage")
+  local itemUsed = safeBridgeCall(bridge, "getUsedItemStorage")
+  local fluidTotal = safeBridgeCall(bridge, "getTotalFluidStorage")
+  local fluidUsed = safeBridgeCall(bridge, "getUsedFluidStorage")
+  local aePerTick = safeBridgeCall(bridge, "getEnergyUsage")
+  local cpus = safeBridgeCall(bridge, "getCraftingCPUs")
+
+  local cpuTotal = nil
+  local cpuUsed = nil
+  if type(cpus) == "table" then
+    cpuTotal = #cpus
+    cpuUsed = 0
+
+    for _, cpu in ipairs(cpus) do
+      if cpu.isBusy then
+        cpuUsed = cpuUsed + 1
+      end
+    end
+  end
+
+  local euPerTick = nil
+  if type(aePerTick) == "number" then
+    euPerTick = aePerTick / 2
+  end
+
+  return {
+    itemTotal = itemTotal,
+    itemUsed = itemUsed,
+    fluidTotal = fluidTotal,
+    fluidUsed = fluidUsed,
+    aePerTick = aePerTick,
+    euPerTick = euPerTick,
+    cpuTotal = cpuTotal,
+    cpuUsed = cpuUsed,
+    queueSize = countQueuedRequests(),
+    bridgeMissing = false,
+  }
+end
+
+local function fmtStatNumber(n)
+  if type(n) ~= "number" then
+    return "N/A"
+  end
+
+  if math.abs(n - math.floor(n)) < 0.001 then
+    return tostring(math.floor(n))
+  end
+
+  return string.format("%.1f", n)
+end
+
 local function loadRules()
   if not fs.exists(RULES_FILE) then
     return {}, nil
@@ -594,22 +689,71 @@ local function drawMain()
   clear()
   drawHeader("AutoCraft - Main Menu")
 
-  local _, h = term.getSize()
+  local w, h = term.getSize()
   local startY = 3
   local visibleRows = h - 4
+
+  local stats = getMainMenuStats()
+
+  local panelWidth = math.min(34, math.max(24, math.floor(w * 0.42)))
+  local menuWidth = math.max(18, w - panelWidth - 3)
+  local panelX = menuWidth + 2
 
   state.scroll = ensureVisible(#state.menu, state.selected, state.scroll, visibleRows)
 
   for i = 1, visibleRows do
     local idx = state.scroll + i
     local y = startY + i - 1
+
     fillLine(y)
 
     local item = state.menu[idx]
     if item then
-      local bg = idx == state.selected and colors.lightGray or colors.black
-      local fg = idx == state.selected and colors.black or colors.white
-      writeAt(3, y, item.label, fg, bg)
+      local selected = idx == state.selected
+      local bg = selected and colors.lightGray or colors.black
+      local fg = selected and colors.black or colors.white
+
+      writeAt(2, y, string.rep(" ", menuWidth - 1), fg, bg)
+      writeAt(3, y, ellipsize(item.label, menuWidth - 3), fg, bg)
+    end
+  end
+
+  for y = startY, h - 1 do
+    writeAt(panelX, y, "|", colors.gray, colors.black)
+  end
+
+  local statLines = {
+    "Network Stats",
+    "",
+    "Items:  " .. fmtStatNumber(stats.itemUsed) .. " / " .. fmtStatNumber(stats.itemTotal),
+    "Fluids: " .. fmtStatNumber(stats.fluidUsed) .. " / " .. fmtStatNumber(stats.fluidTotal),
+    "",
+    "Energy: " .. fmtStatNumber(stats.euPerTick) .. " EU/t",
+    "       (" .. fmtStatNumber(stats.aePerTick) .. " AE/t)",
+    "",
+    "CPUs:   " .. fmtStatNumber(stats.cpuUsed) .. " / " .. fmtStatNumber(stats.cpuTotal),
+    "Queue:  " .. fmtStatNumber(stats.queueSize),
+  }
+
+  if stats.bridgeMissing then
+    statLines = {
+      "Network Stats",
+      "",
+      "Bridge not found",
+      "",
+      "Items:  N/A",
+      "Fluids: N/A",
+      "Energy: N/A",
+      "CPUs:   N/A",
+      "Queue:  " .. fmtStatNumber(stats.queueSize),
+    }
+  end
+
+  for i, line in ipairs(statLines) do
+    local y = startY + i - 1
+    if y < h then
+      local fg = (i == 1) and colors.cyan or colors.lightGray
+      writeAt(panelX + 2, y, ellipsize(line, w - panelX - 2), fg, colors.black)
     end
   end
 
