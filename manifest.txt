@@ -1,0 +1,6 @@
+autocraft/main.lua
+autocraft/daemon.lua
+autocraft/Queue.lua
+autocraft/ui.lua
+startup.lua
+version.txt
