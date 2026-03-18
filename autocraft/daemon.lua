@@ -138,37 +138,37 @@ end
 
 ---@param bridge table
 ---@param rule Rule
----@return number
+---@return number|nil
 ---@return string|nil
 local function getStoredAmount(bridge, rule)
-  local filter = buildFilter(rule, nil)
+  local list, err
 
-  local list
   if rule.type == "fluid" then
-    if type(bridge.listFluids) ~= "function" then
-      return 0, "listFluids not supported"
+    if type(bridge.listFluid) ~= "function" then
+      return nil, "Bridge does not support listFluid"
     end
-    list = bridge.listFluids()
+
+    list, err = bridge.listFluid()
   else
     if type(bridge.listItems) ~= "function" then
-      return 0, "listItems not supported"
+      return nil, "Bridge does not support listItems"
     end
-    list = bridge.listItems()
+
+    list, err = bridge.listItems()
   end
 
   if type(list) ~= "table" then
-    return 0, "Invalid list response"
+    return nil, err or "Bridge returned invalid storage list"
   end
 
-  for _, entry in ipairs(list) do
-    if entry.name == filter.name then
-      if filter.fingerprint and entry.fingerprint ~= filter.fingerprint then
-        goto continue
+  for _, entry in pairs(list) do
+    if rule.fingerprint and rule.fingerprint ~= "" then
+      if entry.fingerprint == rule.fingerprint then
+        return tonumber(entry.amount) or 0, nil
       end
-
-      return entry.amount or 0, nil
+    elseif entry.name == rule.resource_name then
+      return tonumber(entry.amount) or 0, nil
     end
-    ::continue::
   end
 
   return 0, nil
@@ -219,8 +219,9 @@ local function shouldQueue(bridge, rule, state, now)
     return false
   end
 
-  local amount = getStoredAmount(bridge, rule)
+  local amount, err = getStoredAmount(bridge, rule)
   if amount == nil then
+    state.last_error = err
     return false
   end
 
