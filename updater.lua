@@ -1,8 +1,9 @@
 local M = {}
 
 local base = "https://raw.githubusercontent.com/dos54/AE2-Computercraft-Requester/main/"
-
 local LOG_FILE = "updater.log"
+local VERSION_FILE = "version.txt"
+local MANIFEST_FILE = "manifest.txt"
 
 local function log(msg)
   local ts = os.date("%Y-%m-%d %H:%M:%S")
@@ -17,19 +18,31 @@ local function log(msg)
   end
 end
 
+local function trim(s)
+  return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
 local function fetch(url)
-  local res = http.get(url)
+  local res, err = http.get(url, nil, true)
   if not res then
-    return nil, "HTTP request failed: " .. url
+    return nil, "HTTP request failed: " .. tostring(err or url)
+  end
+
+  local code = res.getResponseCode and res.getResponseCode() or nil
+  if code and code ~= 200 then
+    local body = res.readAll()
+    res.close()
+    return nil, "HTTP " .. tostring(code) .. " for " .. url .. ": " .. tostring(body)
   end
 
   local body = res.readAll()
   res.close()
-  return body, nil
-end
 
-local function trim(s)
-  return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if type(body) ~= "string" or body == "" then
+    return nil, "Empty response for " .. url
+  end
+
+  return body, nil
 end
 
 local function readLocalFile(path)
@@ -47,11 +60,28 @@ local function readLocalFile(path)
   return text
 end
 
-local function ensureDir(path)
+local function writeFileAtomic(path, contents)
+  local tmp = path .. ".tmp"
   local dir = fs.getDir(path)
+
   if dir ~= "" and not fs.exists(dir) then
     fs.makeDir(dir)
   end
+
+  local f = fs.open(tmp, "w")
+  if not f then
+    return false, "Failed to open temp file for " .. path
+  end
+
+  f.write(contents)
+  f.close()
+
+  if fs.exists(path) then
+    fs.delete(path)
+  end
+
+  fs.move(tmp, path)
+  return true, nil
 end
 
 local function parseManifest(text)
@@ -68,7 +98,7 @@ local function parseManifest(text)
 end
 
 local function readLocalVersion()
-  local v = readLocalFile("version.txt")
+  local v = readLocalFile(VERSION_FILE)
   if not v then
     return nil
   end
@@ -77,7 +107,7 @@ local function readLocalVersion()
 end
 
 local function fetchRemoteVersion()
-  local v, err = fetch(base .. "version.txt")
+  local v, err = fetch(base .. VERSION_FILE .. "?_=" .. tostring(os.epoch("utc")))
   if not v then
     return nil, err
   end
@@ -86,7 +116,7 @@ local function fetchRemoteVersion()
 end
 
 local function fetchManifest()
-  local text, err = fetch(base .. "manifest.txt")
+  local text, err = fetch(base .. MANIFEST_FILE .. "?_=" .. tostring(os.epoch("utc")))
   if not text then
     return nil, err
   end
@@ -94,35 +124,42 @@ local function fetchManifest()
   return parseManifest(text), nil
 end
 
-local function downloadFile(path)
-  ensureDir(path)
+local function ensureManagedFiles(files)
+  local seen = {}
 
-  if fs.exists(path) then
-    fs.delete(path)
+  for _, path in ipairs(files) do
+    seen[path] = true
   end
 
+  if not seen[VERSION_FILE] then
+    files[#files + 1] = VERSION_FILE
+  end
+
+  if not seen[MANIFEST_FILE] then
+    files[#files + 1] = MANIFEST_FILE
+  end
+end
+
+local function downloadFile(path)
+  local url = base .. path .. "?_=" .. tostring(os.epoch("utc"))
   log("Downloading " .. path)
-  local ok = shell.run("wget", base .. path, path)
+
+  local body, err = fetch(url)
+  if not body then
+    return false, err or ("Failed to download " .. path)
+  end
+
+  local ok, writeErr = writeFileAtomic(path, body)
   if not ok then
-    return false, "Failed to download " .. path
+    return false, writeErr
   end
 
   return true, nil
 end
 
-local function removeFilesNotInManifest(manifestFiles)
-  local keep = {}
-  for _, path in ipairs(manifestFiles) do
-    keep[path] = true
-  end
-
-  local localVersion = "version.txt"
-  if fs.exists(localVersion) and not keep[localVersion] then
-    fs.delete(localVersion)
-  end
-end
-
 function M.installOrUpdate(force)
+  log("Updater started")
+
   local localVersion = readLocalVersion()
   local remoteVersion, versionErr = fetchRemoteVersion()
 
@@ -131,12 +168,13 @@ function M.installOrUpdate(force)
     return false
   end
 
+  log("Local version:  " .. tostring(localVersion or "<none>"))
+  log("Remote version: " .. tostring(remoteVersion))
+
   if not force and localVersion and localVersion == remoteVersion then
+    log("Already up to date")
     return true
   end
-
-  log("Local version:  " .. tostring(localVersion or "<none>"))
-  log("Remote version: " .. remoteVersion)
 
   local files, manifestErr = fetchManifest()
   if not files then
@@ -144,17 +182,23 @@ function M.installOrUpdate(force)
     return false
   end
 
+  ensureManagedFiles(files)
+
   for _, path in ipairs(files) do
     local ok, err = downloadFile(path)
     if not ok then
-      log(err or "Download failed")
+      log(err or ("Download failed for " .. path))
       return false
     end
   end
 
-  removeFilesNotInManifest(files)
+  local writtenVersion = readLocalVersion()
+  if trim(writtenVersion) ~= remoteVersion then
+    log("Version mismatch after update. Expected " .. remoteVersion .. ", got " .. tostring(writtenVersion))
+    return false
+  end
 
-  log("Update complete.")
+  log("Update complete")
   return true
 end
 
